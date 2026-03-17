@@ -4,8 +4,15 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-const ACCESS_TOKEN = process.env.ACCESS_TOKEN;      // LINE Channel Access Token
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;  // OpenAI API Key
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+const MBTI_TYPES = new Set([
+  "INTJ", "INTP", "ENTJ", "ENTP",
+  "INFJ", "INFP", "ENFJ", "ENFP",
+  "ISTJ", "ISFJ", "ESTJ", "ESFJ",
+  "ISTP", "ISFP", "ESTP", "ESFP"
+]);
 
 function parseBirthDate(text) {
   const normalized = String(text)
@@ -28,28 +35,12 @@ function parseBirthDate(text) {
   return { year, month, day, original: `${year}/${month}/${day}` };
 }
 
-async function createPersonalityAnalysis(birthDate) {
-  const prompt = `
-あなたは日本語でやさしく丁寧に性格分析をする占いアシスタントです。
-以下の生年月日の人について、前向きで読みやすい性格分析を作成してください。
+function parseMbti(text) {
+  const normalized = String(text).trim().toUpperCase().replace(/\s+/g, "");
+  return MBTI_TYPES.has(normalized) ? normalized : null;
+}
 
-生年月日: ${birthDate.original}
-
-ルール:
-- 日本語で自然に書く
-- 250〜400文字程度
-- 以下の構成で出力
-1. 性格の核
-2. 強み
-3. 恋愛傾向
-4. 仕事傾向
-5. 一言アドバイス
-- 見出しを入れる
-- 絵文字は少しだけ使ってよい
-- 改行を適度に入れる
-- 「断定しすぎない、やさしい表現」にする
-`;
-
+async function callOpenAI(prompt) {
   const response = await axios.post(
     "https://api.openai.com/v1/responses",
     {
@@ -65,16 +56,82 @@ async function createPersonalityAnalysis(birthDate) {
     }
   );
 
-  // Responses APIの返答からテキストを安全に拾う
   let text =
     response.data?.output_text ||
-    response.data?.output?.map(item =>
-      item?.content?.map(c => c?.text).join("")
-    ).join("\n") ||
-    "分析結果の生成に失敗しました。もう一度お試しください。";
+    response.data?.output
+      ?.map(item => item?.content?.map(c => c?.text || "").join(""))
+      .join("\n") ||
+    "うまく生成できませんでした。もう一度お試しください。";
 
-  text = String(text).replace(/\\n/g, "\n").trim();
-  return text;
+  return String(text).replace(/\\n/g, "\n").trim();
+}
+
+async function createPersonalityAnalysis(birthDate) {
+  const prompt = `
+あなたは日本語でやさしく丁寧に性格分析をする占いアシスタントです。
+以下の生年月日の人について、前向きで読みやすい性格分析を作成してください。
+
+生年月日: ${birthDate.original}
+
+ルール:
+- 日本語で自然に書く
+- 250〜400文字程度
+- 以下の構成で出力
+【性格の核】
+【強み】
+【恋愛傾向】
+【仕事傾向】
+【一言アドバイス】
+- 見出しを入れる
+- 絵文字は少しだけ使ってよい
+- 改行を適度に入れる
+- 断定しすぎない、やさしい表現にする
+`;
+
+  return await callOpenAI(prompt);
+}
+
+async function createMbtiAnalysis(mbti) {
+  const prompt = `
+あなたはMBTIの解説が得意な日本語アシスタントです。
+以下のMBTIタイプについて、親しみやすく分かりやすい解説を作成してください。
+
+MBTI: ${mbti}
+
+ルール:
+- 日本語で自然に書く
+- 250〜400文字程度
+- 以下の構成で出力
+【${mbti}タイプの特徴】
+【強み】
+【恋愛傾向】
+【仕事傾向】
+【一言アドバイス】
+- 改行をしっかり入れる
+- ポジティブで読みやすくする
+- 絵文字は少しだけ使ってよい
+`;
+
+  return await callOpenAI(prompt);
+}
+
+async function createChatReply(userMessage) {
+  const prompt = `
+あなたはLINEで会話する、やさしく親しみやすい日本語アシスタントです。
+相手のメッセージに自然に返答してください。
+
+ユーザーメッセージ:
+${userMessage}
+
+ルール:
+- 日本語で返す
+- 1〜4文程度
+- やさしく自然な会話にする
+- 必要に応じて少しだけ質問して会話を続ける
+- 相手が生年月日やMBTIを送りたくなるように、最後に軽く案内してもよい
+`;
+
+  return await callOpenAI(prompt);
 }
 
 async function replyToLine(replyToken, text) {
@@ -85,7 +142,7 @@ async function replyToLine(replyToken, text) {
       messages: [
         {
           type: "text",
-          text
+          text: text.slice(0, 5000)
         }
       ]
     },
@@ -101,8 +158,6 @@ async function replyToLine(replyToken, text) {
 
 app.post("/webhook", async (req, res) => {
   const events = req.body.events || [];
-
-  // LINEには先に200を返す
   res.sendStatus(200);
 
   for (const event of events) {
@@ -113,24 +168,26 @@ app.post("/webhook", async (req, res) => {
 
       const userMessage = event.message.text.trim();
       const birthDate = parseBirthDate(userMessage);
+      const mbti = parseMbti(userMessage);
 
-      if (!birthDate) {
-        await replyToLine(
-          event.replyToken,
-          "生年月日を送ってください✨\n\n例：1990/04/11\nまたは\n1990年4月11日"
-        );
-        continue;
+      let replyText = "";
+
+      if (birthDate) {
+        replyText = await createPersonalityAnalysis(birthDate);
+      } else if (mbti) {
+        replyText = await createMbtiAnalysis(mbti);
+      } else {
+        replyText = await createChatReply(userMessage);
       }
 
-      const analysis = await createPersonalityAnalysis(birthDate);
-      await replyToLine(event.replyToken, analysis);
+      await replyToLine(event.replyToken, replyText);
 
     } catch (error) {
       console.error("Webhook error:", error?.response?.data || error.message);
       try {
         await replyToLine(
           event.replyToken,
-          "申し訳ありません。分析中にエラーが発生しました。少し時間をおいてもう一度お試しください。"
+          "申し訳ありません。処理中にエラーが発生しました。少し時間をおいてもう一度お試しください。"
         );
       } catch (replyError) {
         console.error("Reply error:", replyError?.response?.data || replyError.message);
