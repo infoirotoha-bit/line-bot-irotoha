@@ -4,13 +4,13 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-const ACCESS_TOKEN = "cuXlAbmvPG8M5ftYXkCK+26YTwmtxAy166O/24uFtQdLNb/RrEnOK0wnm68oUBr1pfWi9Eogw7i9MPLbfo4kgVNr50HTpLxkx0pAqhV6PJxzay/+v5rmzZCzqE5r5+wbN2NkJirideotgGxoYqnaxgdB04t89/1O/w1cDnyilFU=";
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
 
 app.post("/webhook", async (req, res) => {
-  const events = req.body.events;
+  const events = req.body.events || [];
 
   for (const event of events) {
-    if (event.type === "message") {
+    if (event.type === "message" && event.replyToken) {
       await axios.post(
         "https://api.line.me/v2/bot/message/reply",
         {
@@ -24,7 +24,8 @@ app.post("/webhook", async (req, res) => {
         },
         {
           headers: {
-            Authorization: `Bearer ${ACCESS_TOKEN}`
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            "Content-Type": "application/json"
           }
         }
       );
@@ -34,4 +35,6 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-app.listen(3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Server is running");
+});
